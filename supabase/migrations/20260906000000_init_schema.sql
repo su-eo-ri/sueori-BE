@@ -78,6 +78,10 @@ create policy "reference landmarks are publicly readable" on public.reference_la
   for select using (true);
 
 create policy "users manage their own practice sessions" on public.practice_sessions
-  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+  for all to authenticated
+  using ((select auth.uid()) = user_id)
+  with check ((select auth.uid()) = user_id);
 create policy "users manage their own favorites" on public.favorites
-  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+  for all to authenticated
+  using ((select auth.uid()) = user_id)
+  with check ((select auth.uid()) = user_id);
