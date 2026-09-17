@@ -1,0 +1,12 @@
+.venv/
+video_cache/
+hand_landmarker.task
+extracted_landmarks.json
+all_items.json
+titles_sample.txt
+days_search.txt
+group_search.txt
+family_search.txt
+family_picks.txt
+debug_raw.xml
+sample.mp4
