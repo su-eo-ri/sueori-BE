@@ -1,7 +1,11 @@
 .venv/
+.venv-linux/
+__pycache__/
 video_cache/
 hand_landmarker.task
 extracted_landmarks.json
+extracted_landmarks_jamo.json
+jamo_picks.json
 all_items.json
 all_items_full.json
 _analysis_out.txt
