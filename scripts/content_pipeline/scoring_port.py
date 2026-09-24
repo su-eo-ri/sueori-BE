@@ -77,10 +77,14 @@ def relative_times(frames: list[dict], fps: float = 30.0) -> np.ndarray:
 
 
 def recording_ms(frames: list[dict]) -> int:
-    """FE 녹화 길이: tMs가 있으면 (last - first) × 1.2를 반올림해 2000~8000ms, 없으면 3000ms."""
-    if not all("tMs" in f for f in frames):
+    """FE 녹화 길이(hand_track_scoring.dart): 첫·마지막 tMs가 있고 last > first면
+    (last - first) × 1.2를 반올림해 2000~8000ms, 아니면 3000ms."""
+    first = frames[0].get("tMs") if frames else None
+    last = frames[-1].get("tMs") if frames else None
+    if first is None or last is None or last <= first:
         return 3000
-    return int(min(8000, max(2000, round((frames[-1]["tMs"] - frames[0]["tMs"]) * 1.2))))
+    # Dart round()는 .5를 0에서 먼 쪽으로 올린다(Python round()는 짝수 쪽). 값은 항상 양수.
+    return min(8000, max(2000, int((last - first) * 1.2 + 0.5)))
 
 
 def playback(arr: np.ndarray, times: np.ndarray, length_ms: int) -> np.ndarray:
