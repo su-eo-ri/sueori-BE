@@ -8,7 +8,7 @@ import math
 import numpy as np
 
 DTW_DECAY = 6.5
-PLAYBACK_FRAMES = 30  # FE 3초 녹화(100ms 간격)
+CAPTURE_MS = 33  # FE 동적 녹화 캡처 간격 (PR #12 이전 100ms)
 
 
 def to_array(frames: list[dict]) -> np.ndarray:
@@ -16,12 +16,19 @@ def to_array(frames: list[dict]) -> np.ndarray:
     return np.array([[[p["x"], p["y"], p["z"]] for p in f["landmarks"]] for f in frames], dtype=float)
 
 
+PALM = [0, 5, 9, 13, 17]
+
+
 def normalize(arr: np.ndarray) -> np.ndarray:
-    """normalizeAndFlatten: 손목(0) 원점, 손목~중지 MCP(9) 거리로 스케일. (N,21,3) → (N,21,3)."""
-    wrist = arr[:, 0:1, :]
-    scale = np.linalg.norm(arr[:, 9, :] - arr[:, 0, :], axis=1)
+    """normalizeAndFlatten: 손목(0) 원점, 손바닥 5점(0,5,9,13,17) 쌍별 3D 거리 최댓값으로 스케일.
+
+    (N,21,3) → (N,21,3). FE PR #12 이전에는 손목~중지 MCP(9) 거리였는데, 손을 돌릴 때
+    그 거리가 짧아지면서 실제 움직임이 부풀려져 바뀌었다.
+    """
+    pts = arr[:, PALM, :]
+    scale = np.linalg.norm(pts[:, :, None, :] - pts[:, None, :, :], axis=3).reshape(len(arr), -1).max(axis=1)
     scale = np.where(scale < 1e-9, 1.0, scale)
-    return (arr - wrist) / scale[:, None, None]
+    return (arr - arr[:, 0:1, :]) / scale[:, None, None]
 
 
 def avg_landmark_distance(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -61,24 +68,42 @@ def dtw_score(reference: np.ndarray, candidate: np.ndarray, decay: float = DTW_D
     return float(min(100.0, max(0.0, 100 * math.exp(-decay * avg))))
 
 
-def playback(arr: np.ndarray, n: int = PLAYBACK_FRAMES) -> np.ndarray:
-    """FE 교차표의 '재생': frames[(i * len / 30).floor()] for i in 0..29."""
-    return arr[[math.floor(i * len(arr) / n) for i in range(n)]]
+def relative_times(frames: list[dict], fps: float = 30.0) -> np.ndarray:
+    """frames[0]을 0으로 둔 상대 시각(ms). tMs가 없으면 i*1000/fps (FE와 같음)."""
+    if all("tMs" in f for f in frames):
+        t = np.array([f["tMs"] for f in frames], dtype=float)
+        return t - t[0]
+    return np.arange(len(frames)) * 1000.0 / fps
 
 
-def still(arr: np.ndarray, index: int, n: int = PLAYBACK_FRAMES) -> np.ndarray:
-    """FE 교차표의 '정지': frames[index]를 30번 반복."""
-    return np.repeat(arr[index : index + 1], n, axis=0)
+def recording_ms(frames: list[dict]) -> int:
+    """FE 녹화 길이: tMs가 있으면 (last - first) × 1.2를 반올림해 2000~8000ms, 없으면 3000ms."""
+    if not all("tMs" in f for f in frames):
+        return 3000
+    return int(min(8000, max(2000, round((frames[-1]["tMs"] - frames[0]["tMs"]) * 1.2))))
 
 
-def cross_table(words: dict[str, np.ndarray]) -> tuple[list[str], list[list[float]]]:
-    """행 = 기준, 열 = 각 단어 재생 + 정지(첫) + 정지(중간). FE 표와 같은 배치."""
+def playback(arr: np.ndarray, times: np.ndarray, length_ms: int) -> np.ndarray:
+    """FE 교차표의 '재생': t = 0, 33, … < 녹화 길이에서 tMs ≤ t인 마지막 프레임(끝나면 마지막 자세 유지)."""
+    ts = np.arange(0, length_ms, CAPTURE_MS)
+    return arr[np.searchsorted(times, ts, side="right") - 1]
+
+
+def still(arr: np.ndarray, index: int, length_ms: int) -> np.ndarray:
+    """FE 교차표의 '정지': frames[index]를 floor(녹화 길이 / 33)장 반복."""
+    return np.repeat(arr[index : index + 1], length_ms // CAPTURE_MS, axis=0)
+
+
+def cross_table(words: dict[str, list[dict]]) -> tuple[list[str], list[list[float]]]:
+    """행 = 기준, 열 = 각 단어 재생 + 정지(첫) + 정지(중간). 녹화 길이는 기준(행) 단어로 정한다."""
     names = list(words)
+    arrays = {n: to_array(words[n]) for n in names}
+    times = {n: relative_times(words[n]) for n in names}
     rows = []
     for ref_name in names:
-        ref = words[ref_name]
-        row = [dtw_score(ref, playback(words[c])) for c in names]
-        row += [dtw_score(ref, still(ref, 0)), dtw_score(ref, still(ref, len(ref) // 2))]
+        ref, length = arrays[ref_name], recording_ms(words[ref_name])
+        row = [dtw_score(ref, playback(arrays[c], times[c], length)) for c in names]
+        row += [dtw_score(ref, still(ref, 0, length)), dtw_score(ref, still(ref, len(ref) // 2, length))]
         rows.append(row)
     return names, rows
 
