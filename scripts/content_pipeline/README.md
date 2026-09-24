@@ -48,3 +48,55 @@ cd ../.. && npx supabase db push --project-ref kdtnjlvojaipppnxpnwt
 - 다운로드한 영상, 추출된 랜드마크 JSON, MediaPipe 모델(`.task`), venv는 전부 `.gitignore`
   대상 — 재현 가능한 스크립트만 커밋하고 산출물(대용량/바이너리)은 커밋하지 않는다.
   실제 시딩 데이터는 생성된 마이그레이션 SQL(`supabase/migrations/`) 쪽에 남는다.
+- **이 PC에서는 WSL로 실행**: Windows Smart App Control이 mediapipe 네이티브 DLL을 막아서,
+  `wsl -d Ubuntu`에서 `.venv-linux/bin/python ...`으로 실행한다(모델·캐시 영상은 `/mnt/c`로 공유).
+
+## 기준 동작 정제 (동적 단어, 2026-09-25)
+
+`extract_landmarks.py` 결과를 그대로 기준으로 쓰면, 기준 frames를 재생해도 FE 채점(DTW,
+decay 6.5)이 통과선 80 아래(가족 7단어 45~69점)로 나왔다. 동적 단어는 시딩 전에 정제한다.
+
+```
+# (WSL) 1. 캐시 영상에서 tMs 포함 재추출 + 정제 → refined_landmarks.json, 마이그레이션 SQL
+.venv-linux/bin/python refine_landmarks.py
+# 2. 정제 전/후 교차 점수표 (PR 본문에 첨부)
+.venv-linux/bin/python compare_scores.py
+```
+
+- `scoring_port.py`: FE 채점기(`sueori-MVP-FE` `packages/scoring_poc/lib/src/` normalize /
+  landmark_distance / dtw_scorer)의 Python 이식본. FE가 계산한 정제 전 교차표 49칸을 그대로
+  재현한다. **FE 채점 로직이 바뀌면 이 파일도 같이 맞춰야 한다.**
+- **tMs**: 각 프레임에 원본 영상 기준 시각(ms)을 넣는다. 손이 안 잡힌 프레임은 건너뛰므로
+  이 값이 있어야 시간 간격이 보존된다. FE는 녹화 길이를 맞출 때 쓴다(무시해도 호환).
+
+### 정제 단계 (`refine_landmarks.PARAMS`)
+1. **다수 handedness가 아닌 프레임 제거** — `num_hands=1`이라 양손 수어에서 잡히는 손이 바뀌는 프레임.
+2. **가장자리 자르기(`edge_motion` 0.15)** — 앞뒤에서 직전 프레임 대비 이동량(손목 원점 +
+   손목~중지 MCP 거리로 정규화, 관절 평균 거리)이 0.15를 넘는 동안 잘라낸다. 손이 수어
+   위치로 올라오고 내려가는 구간이다.
+3. **선형 보간** — 1에서 빠진 안쪽 프레임은 원래 `tMs` 위치에 raw 좌표로 선형 보간해 채우고
+   `"interpolated": true`를 표시한다.
+4. **이동평균(`smooth` ±2프레임)** — raw 좌표에 적용.
+
+좌표는 raw(0~1 이미지 좌표) 그대로라 FE 계약(`frames = [{landmarks:[{x,y,z}×21], handedness}]`,
+`frames[0]`은 고스트 오버레이)을 유지한다. 가장자리를 자르므로 `frames[0]`은 수어 시작 자세다.
+
+### 시도했다가 기각한 방법
+- **이웃 중앙값 이상치 제거**(±2프레임 중앙값 대비 편차 0.15~0.35 초과 프레임 제거 후 보간):
+  자기 재생은 89~100이 됐지만 **정지 자세도 92~100으로 통과**했다. 튀는 프레임 대부분이
+  노이즈가 아니라 실제 동작이라, 지우면 동작이 사라지고 판별력이 무너진다.
+- **손 크기 필터**(손목~MCP9 거리가 중앙값의 60% 미만인 프레임 제거): 효과가 거의 없었다.
+
+튀는 프레임의 원인: 손을 돌리거나 손등이 카메라를 향할 때 손목~중지 MCP 거리가 평소의
+40~50%로 짧아지고, 정규화가 이 거리로 나누면서 실제 움직임이 크게 부풀려진다(손목의 화면
+위치 점프는 작아서 다른 손으로 건너뛴 경우는 아님). 60fps 영상 3단어(동생·남동생·누나)는
+이 때문에 정제 후에도 60점대이고, FE 채점 정규화 개선으로 풀기로 했다.
+
+### 검증 기준
+정제 후 교차표에서 ① 자기 재생 ≥ 80 ② 다른 단어 재생 < 80 ③ 정지 자세(기준 첫 프레임 /
+가운데 프레임 30번 반복) < 80. ②③이 깨지면 정제가 과한 것이다.
+
+### 반영 방식
+원본 행은 그대로 두고 `model_version = <원본>-refined-v1`, 고정 `captured_at`으로 새 행을
+추가한다. FE는 `word_id`별 `captured_at`이 가장 최신인 행 1개를 읽으므로 FE 변경 없이 적용된다.
+롤백: `delete from public.reference_landmarks where model_version like '%-refined-v1';`

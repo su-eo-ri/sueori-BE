@@ -17,3 +17,5 @@ family_search.txt
 family_picks.txt
 debug_raw.xml
 sample.mp4
+extracted_landmarks_tms.json
+refined_landmarks.json

@@ -111,6 +111,8 @@ def extract_landmarks(video_path: Path) -> list[dict]:
                 {
                     "landmarks": [{"x": lm.x, "y": lm.y, "z": lm.z} for lm in hand],
                     "handedness": handedness,
+                    # 손이 안 잡힌 프레임은 건너뛰므로, 원본 영상 기준 시각을 남겨야 시간 간격이 보존된다.
+                    "tMs": timestamp_ms,
                 }
             )
         cap.release()
